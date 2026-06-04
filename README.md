@@ -1,6 +1,6 @@
-# nscurl
+# nsucurl
 
-`nscurl` is a curl-compatible wrapper for Akamai NetStorage Usage API requests.
+`nsucurl` is a curl-compatible wrapper for Akamai NetStorage Usage API requests.
 It generates these headers and then sends the request:
 
 - `X-Akamai-ACS-Action`
@@ -10,7 +10,7 @@ It generates these headers and then sends the request:
 ## Usage
 
 ```sh
-nscurl --acs-account UploadAccountMedia \
+nsucurl --acs-account UploadAccountMedia \
   --acs-key "$NETSTORAGE_KEY" \
   --acs-action 'version=1&action=dir&format=xml' \
   https://example-nsu.akamaihd.net/123456/path/
@@ -25,14 +25,14 @@ key = <netstorage-http-api-key>
 ```
 
 ```sh
-nscurl --acs-action 'version=1&action=stat' \
+nsucurl --acs-action 'version=1&action=stat' \
   https://example-nsu.akamaihd.net/123456/path/file.txt
 ```
 
 Upload example:
 
 ```sh
-nscurl -X PUT \
+nsucurl -X PUT \
   --acs-action 'version=1&action=upload&md5=<hex>&mtime=1260000000' \
   --data-binary @sweep.m4a \
   https://example-nsu.akamaihd.net/123456/files_baseball/sweep.m4a
@@ -40,7 +40,7 @@ nscurl -X PUT \
 
 ## Options
 
-`nscurl` options:
+`nsucurl` options:
 
 - `--acs-config <file>`: credential file path. Default: `~/.nsacsrc`
 - `--acs-section <name>`: credential section. Default: `default`

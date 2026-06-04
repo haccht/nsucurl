@@ -1,3 +1,3 @@
-module github.com/haccht/nscurl
+module github.com/haccht/nsucurl
 
 go 1.26

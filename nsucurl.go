@@ -90,7 +90,7 @@ type signedHeaders struct {
 func run(args []string, environ []string, stdout, stderr io.Writer) int {
 	code, err := runErr(args, environ, stdout, stderr)
 	if err != nil {
-		fmt.Fprintln(stderr, "nscurl:", err)
+		fmt.Fprintln(stderr, "nsucurl:", err)
 		return code
 	}
 	return code
@@ -217,7 +217,7 @@ func parseArgs(args []string) (acsOptions, curlRequest, error) {
 				acs.SignVersion = n
 				acs.SignVersionSet = true
 			default:
-				return acs, req, fmt.Errorf("unknown nscurl option: %s", name)
+				return acs, req, fmt.Errorf("unknown nsucurl option: %s", name)
 			}
 			continue
 		}
@@ -664,7 +664,7 @@ func envMap(environ []string) map[string]string {
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  nscurl [--acs-account ACCOUNT] [--acs-key KEY] --acs-action ACTION [curl-options] URL
+  nsucurl [--acs-account ACCOUNT] [--acs-key KEY] --acs-action ACTION [curl-options] URL
 
 NetStorage authentication options:
   --acs-config FILE          credential file path (default: ~/.nsacsrc)
@@ -675,7 +675,7 @@ NetStorage authentication options:
   --acs-sign-version 3|4|5   signature version (default: 5)
 
 Example:
-  nscurl --acs-action 'version=1&action=stat' \
+  nsucurl --acs-action 'version=1&action=stat' \
     https://example-nsu.akamaihd.net/123456/path/file.txt
 `)
 }
