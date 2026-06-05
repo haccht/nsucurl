@@ -16,7 +16,7 @@ nsucurl --acs-account UploadAccountMedia \
   https://example-nsu.akamaihd.net/123456/path/
 ```
 
-With `~/.nsacsrc`:
+With `~/.nsuacsrc`:
 
 ```ini
 [default]
@@ -42,7 +42,7 @@ nsucurl -X PUT \
 
 `nsucurl` options:
 
-- `--acs-config <file>`: credential file path. Default: `~/.nsacsrc`
+- `--acs-config <file>`: credential file path. Default: `~/.nsuacsrc`
 - `--acs-section <name>`: credential section. Default: `default`
 - `--acs-account <upload-account-id>`
 - `--acs-key <key>`
@@ -55,5 +55,5 @@ Environment variables:
 NETSTORAGE_ACCOUNT=UploadAccountMedia
 NETSTORAGE_KEY=...
 NETSTORAGE_SECTION=default
-NETSTORAGE_CONFIG=~/.nsacsrc
+NETSTORAGE_CONFIG=~/.nsuacsrc
 ```

@@ -40,7 +40,7 @@ func TestSignRequestFixedValues(t *testing.T) {
 
 func TestResolveCredentialsPrecedence(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "nsacsrc")
+	configPath := filepath.Join(dir, "nsuacsrc")
 	if err := os.WriteFile(configPath, []byte("[default]\naccount = file-account\nkey = file-key\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	defaultConfigPath = "~/.nsacsrc"
+	defaultConfigPath = "~/.nsuacsrc"
 	defaultSection    = "default"
 	defaultSignVer    = 5
 )
@@ -464,10 +464,10 @@ func validateRequest(acs acsOptions, req curlRequest, creds credentials) error {
 		return errors.New("--acs-action must contain version=1")
 	}
 	if creds.Account == "" {
-		return errors.New("account is required; use --acs-account, NETSTORAGE_ACCOUNT, or ~/.nsacsrc")
+		return errors.New("account is required; use --acs-account, NETSTORAGE_ACCOUNT, or ~/.nsuacsrc")
 	}
 	if creds.Key == "" {
-		return errors.New("key is required; use --acs-key, NETSTORAGE_KEY, or ~/.nsacsrc")
+		return errors.New("key is required; use --acs-key, NETSTORAGE_KEY, or ~/.nsuacsrc")
 	}
 	if req.AuthDataSeen || req.AuthSignSeen {
 		return errors.New("do not specify X-Akamai-ACS-Auth-Data or X-Akamai-ACS-Auth-Sign manually")
@@ -667,7 +667,7 @@ func printUsage(w io.Writer) {
   nsucurl [--acs-account ACCOUNT] [--acs-key KEY] --acs-action ACTION [curl-options] URL
 
 NetStorage authentication options:
-  --acs-config FILE          credential file path (default: ~/.nsacsrc)
+  --acs-config FILE          credential file path (default: ~/.nsuacsrc)
   --acs-section SECTION      credential section (default: default)
   --acs-account ACCOUNT      NetStorage upload account ID
   --acs-key KEY              NetStorage HTTP API key
