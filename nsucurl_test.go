@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -99,27 +100,182 @@ func TestResolveCredentialsConfigAndSectionPrecedence(t *testing.T) {
 	}
 }
 
-func TestValidationRejectsMissingAndDuplicateHeaders(t *testing.T) {
+func TestParseArgsACSFlags(t *testing.T) {
 	acs, req, err := parseArgs([]string{
-		"--acs-account", "acct",
+		"--acs-config=/tmp/nsuacsrc",
+		"--acs-section", "prod",
+		"--acs-account=acct",
 		"--acs-key", "key",
 		"--acs-action", "version=1&action=dir",
-		"-H", "X-Akamai-ACS-Auth-Data: nope",
+		"--acs-sign-version=4",
+		"-s",
 		"https://example.com/123/",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = validateRequest(acs, req, credentials{Account: "acct", Key: "key"})
-	if err == nil || !strings.Contains(err.Error(), "X-Akamai-ACS-Auth-Data") {
-		t.Fatalf("expected duplicate auth header error, got %v", err)
+	if acs.ConfigPath != "/tmp/nsuacsrc" || !acs.ConfigPathSet {
+		t.Fatalf("config path = %q set=%v", acs.ConfigPath, acs.ConfigPathSet)
+	}
+	if acs.Section != "prod" || !acs.SectionSet {
+		t.Fatalf("section = %q set=%v", acs.Section, acs.SectionSet)
+	}
+	if acs.Account != "acct" || acs.Key != "key" || acs.Action != "version=1&action=dir" {
+		t.Fatalf("acs = %+v", acs)
+	}
+	if acs.SignVersion != 4 || !acs.SignVersionSet {
+		t.Fatalf("sign version = %d set=%v", acs.SignVersion, acs.SignVersionSet)
+	}
+	if !req.Silent || req.URL != "https://example.com/123/" {
+		t.Fatalf("req = %+v", req)
 	}
 
+	acs, _, err = parseArgs([]string{
+		"--acs-action=version=1&action=stat",
+		"https://example.com/123/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acs.Action != "version=1&action=stat" {
+		t.Fatalf("inline action = %q", acs.Action)
+	}
+}
+
+func TestParseArgsHelpAndUnknownACSFlag(t *testing.T) {
+	if _, _, err := parseArgs([]string{"--help"}); !errors.Is(err, errHelp) {
+		t.Fatalf("help err = %v", err)
+	}
+	_, _, err := parseArgs([]string{"--acs-unknown", "value", "https://example.com/123/"})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --acs-unknown") {
+		t.Fatalf("unknown flag err = %v", err)
+	}
+}
+
+func TestParseArgsDoubleDashKeepsCurlArgs(t *testing.T) {
+	acs, req, err := parseArgs([]string{
+		"--acs-action", "version=1&action=dir",
+		"--",
+		"--compressed",
+		"https://example.com/123/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acs.Action != "version=1&action=dir" {
+		t.Fatalf("action = %q", acs.Action)
+	}
+	if req.URL != "https://example.com/123/" {
+		t.Fatalf("url = %q", req.URL)
+	}
+	if got := strings.Join(req.Args, " "); got != "-- --compressed https://example.com/123/" {
+		t.Fatalf("curl args = %q", got)
+	}
+}
+
+func TestValidationRejectsMissingAndDuplicateHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		headerArgs []string
+		want       string
+	}{
+		{
+			name:       "short separate auth data",
+			headerArgs: []string{"-H", "X-Akamai-ACS-Auth-Data: nope"},
+			want:       "X-Akamai-ACS-Auth-Data",
+		},
+		{
+			name:       "short attached auth sign",
+			headerArgs: []string{"-HX-Akamai-ACS-Auth-Sign: nope"},
+			want:       "X-Akamai-ACS-Auth-Sign",
+		},
+		{
+			name:       "long separate action",
+			headerArgs: []string{"--header", "X-Akamai-ACS-Action: version=1&action=dir"},
+			want:       "X-Akamai-ACS-Action",
+		},
+		{
+			name:       "long inline auth data",
+			headerArgs: []string{"--header=X-Akamai-ACS-Auth-Data: nope"},
+			want:       "X-Akamai-ACS-Auth-Data",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{
+				"--acs-account", "acct",
+				"--acs-key", "key",
+				"--acs-action", "version=1&action=dir",
+			}
+			args = append(args, tc.headerArgs...)
+			args = append(args, "https://example.com/123/")
+			acs, req, err := parseArgs(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validateRequest(acs, req, credentials{Account: "acct", Key: "key"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected duplicate header error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	acs, req, err := parseArgs([]string{
+		"--acs-account", "acct",
+		"--acs-key", "key",
+		"--acs-action", "version=1&action=dir",
+		"https://example.com/123/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	acs.Action = "action=dir"
-	req.AuthDataSeen = false
 	err = validateRequest(acs, req, credentials{Account: "acct", Key: "key"})
 	if err == nil || !strings.Contains(err.Error(), "version=1") {
 		t.Fatalf("expected version error, got %v", err)
+	}
+}
+
+func TestUnknownCurlOptionsPassThroughToCurlArgs(t *testing.T) {
+	_, req, err := parseArgs([]string{
+		"--compressed",
+		"--connect-timeout", "10",
+		"--retry=3",
+		"--user-agent", "nsucurl-test",
+		"--location",
+		"https://example.com/first",
+		"https://example.com/123/file",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL != "https://example.com/123/file" {
+		t.Fatalf("url = %q", req.URL)
+	}
+	for _, want := range []string{"--compressed", "--connect-timeout", "--retry=3", "--user-agent", "--location"} {
+		if !contains(req.UnsupportedArgs, want) {
+			t.Fatalf("unsupported args = %#v, missing %q", req.UnsupportedArgs, want)
+		}
+	}
+
+	got := buildCurlArgs(req, signedHeaders{
+		Action:   "version=1&action=dir",
+		AuthData: "data",
+		AuthSign: "sign",
+	})
+	wantArgs := []string{
+		"--compressed",
+		"--connect-timeout", "10",
+		"--retry=3",
+		"--user-agent", "nsucurl-test",
+		"--location",
+		"https://example.com/first",
+		"-H", "X-Akamai-ACS-Action: version=1&action=dir",
+		"-H", "X-Akamai-ACS-Auth-Data: data",
+		"-H", "X-Akamai-ACS-Auth-Sign: sign",
+		"https://example.com/123/file",
+	}
+	if strings.Join(got, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("curl args = %#v, want %#v", got, wantArgs)
 	}
 }
 
@@ -143,6 +299,22 @@ func TestBuildCurlArgsInjectsHeadersBeforeURL(t *testing.T) {
 	urlIdx := strings.Index(joined, "https://example.com/123/file")
 	if actionIdx < 0 || urlIdx < 0 || actionIdx > urlIdx {
 		t.Fatalf("headers were not inserted before URL: %#v", got)
+	}
+}
+
+func TestBuildCurlArgsAppendsHeadersWhenURLIsAbsent(t *testing.T) {
+	got := buildCurlArgs(curlRequest{Args: []string{"--help"}}, signedHeaders{
+		Action:   "version=1&action=dir",
+		AuthData: "data",
+		AuthSign: "sign",
+	})
+	wantSuffix := []string{
+		"-H", "X-Akamai-ACS-Action: version=1&action=dir",
+		"-H", "X-Akamai-ACS-Auth-Data: data",
+		"-H", "X-Akamai-ACS-Auth-Sign: sign",
+	}
+	if strings.Join(got[1:], "\x00") != strings.Join(wantSuffix, "\x00") {
+		t.Fatalf("curl args = %#v", got)
 	}
 }
 
@@ -215,4 +387,13 @@ func TestFallbackRejectsUnknownCurlArgs(t *testing.T) {
 	if code != 2 || err == nil || !strings.Contains(err.Error(), "--compressed") {
 		t.Fatalf("code=%d err=%v", code, err)
 	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

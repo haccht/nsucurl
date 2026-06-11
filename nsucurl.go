@@ -19,9 +19,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/pflag"
 )
 
 const (
@@ -146,6 +147,7 @@ func parseArgs(args []string) (acsOptions, curlRequest, error) {
 		Method:          "GET",
 		UserHeaderNames: map[string]bool{},
 	}
+	var acsArgs []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "-h" || arg == "--help" {
@@ -161,92 +163,77 @@ func parseArgs(args []string) (acsOptions, curlRequest, error) {
 			break
 		}
 		if strings.HasPrefix(arg, "--acs-") {
-			name, val, hasInline := splitLongOpt(arg)
-			needValue := func() (string, error) {
-				if hasInline {
-					return val, nil
-				}
-				if i+1 >= len(args) {
-					return "", fmt.Errorf("%s requires a value", name)
-				}
+			name, _, hasInline := splitLongOpt(arg)
+			acsArgs = append(acsArgs, arg)
+			if !hasInline && acsFlagTakesValue(name) && i+1 < len(args) {
 				i++
-				return args[i], nil
-			}
-			switch name {
-			case "--acs-config":
-				v, err := needValue()
-				if err != nil {
-					return acs, req, err
-				}
-				acs.ConfigPath = v
-				acs.ConfigPathSet = true
-			case "--acs-section":
-				v, err := needValue()
-				if err != nil {
-					return acs, req, err
-				}
-				acs.Section = v
-				acs.SectionSet = true
-			case "--acs-account":
-				v, err := needValue()
-				if err != nil {
-					return acs, req, err
-				}
-				acs.Account = v
-			case "--acs-key":
-				v, err := needValue()
-				if err != nil {
-					return acs, req, err
-				}
-				acs.Key = v
-			case "--acs-action":
-				v, err := needValue()
-				if err != nil {
-					return acs, req, err
-				}
-				acs.Action = v
-			case "--acs-sign-version":
-				v, err := needValue()
-				if err != nil {
-					return acs, req, err
-				}
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return acs, req, fmt.Errorf("invalid --acs-sign-version: %s", v)
-				}
-				acs.SignVersion = n
-				acs.SignVersionSet = true
-			default:
-				return acs, req, fmt.Errorf("unknown nsucurl option: %s", name)
+				acsArgs = append(acsArgs, args[i])
 			}
 			continue
 		}
 
-		consumed, err := parseCurlArg(args, &i, &req)
-		if err != nil {
+		req.Args = append(req.Args, arg)
+		if err := scanCurlArg(args, &i, &req); err != nil {
 			return acs, req, err
 		}
-		req.Args = append(req.Args, consumed...)
+	}
+	if err := parseACSFlags(acsArgs, &acs); err != nil {
+		return acs, req, err
 	}
 	return acs, req, nil
 }
 
-func parseCurlArg(args []string, i *int, req *curlRequest) ([]string, error) {
+func parseACSFlags(args []string, acs *acsOptions) error {
+	fs := newACSFlagSet(acs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	acs.ConfigPathSet = fs.Changed("acs-config")
+	acs.SectionSet = fs.Changed("acs-section")
+	acs.SignVersionSet = fs.Changed("acs-sign-version")
+	return nil
+}
+
+func newACSFlagSet(acs *acsOptions) *pflag.FlagSet {
+	fs := pflag.NewFlagSet("nsucurl", pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.SortFlags = false
+	fs.StringVar(&acs.ConfigPath, "acs-config", defaultConfigPath, "credential file path")
+	fs.StringVar(&acs.Section, "acs-section", defaultSection, "credential section")
+	fs.StringVar(&acs.Account, "acs-account", "", "NetStorage upload account ID")
+	fs.StringVar(&acs.Key, "acs-key", "", "NetStorage HTTP API key")
+	fs.StringVar(&acs.Action, "acs-action", "", "X-Akamai-ACS-Action value")
+	fs.IntVar(&acs.SignVersion, "acs-sign-version", defaultSignVer, "signature version")
+	return fs
+}
+
+func acsFlagTakesValue(name string) bool {
+	acs := acsOptions{
+		ConfigPath:  defaultConfigPath,
+		Section:     defaultSection,
+		SignVersion: defaultSignVer,
+	}
+	flag := newACSFlagSet(&acs).Lookup(strings.TrimPrefix(name, "--"))
+	return flag != nil && flag.NoOptDefVal == ""
+}
+
+func scanCurlArg(args []string, i *int, req *curlRequest) error {
 	arg := args[*i]
 	if looksLikeURL(arg) {
 		req.URL = arg
-		return []string{arg}, nil
+		return nil
 	}
-	nextValue := func(name string) (string, []string, error) {
+	nextValue := func(name string) (string, error) {
 		if *i+1 >= len(args) {
-			return "", nil, fmt.Errorf("%s requires a value", name)
+			return "", fmt.Errorf("%s requires a value", name)
 		}
 		*i++
-		return args[*i], []string{name, args[*i]}, nil
+		req.Args = append(req.Args, args[*i])
+		return args[*i], nil
 	}
-	nextLong := func(name, value string, hasInline bool) (string, []string, error) {
+	nextLong := func(name, value string, hasInline bool) (string, error) {
 		if hasInline {
-			return value, []string{name + "=" + value}, nil
+			return value, nil
 		}
 		return nextValue(name)
 	}
@@ -255,101 +242,103 @@ func parseCurlArg(args []string, i *int, req *curlRequest) ([]string, error) {
 		name, val, hasInline := splitLongOpt(arg)
 		switch name {
 		case "--request":
-			v, c, err := nextLong(name, val, hasInline)
+			v, err := nextLong(name, val, hasInline)
 			req.Method = strings.ToUpper(v)
-			return c, err
+			return err
 		case "--header":
-			v, c, err := nextLong(name, val, hasInline)
+			v, err := nextLong(name, val, hasInline)
 			req.addHeader(v)
-			return c, err
+			return err
 		case "--data", "--data-ascii":
-			v, c, err := nextLong(name, val, hasInline)
+			v, err := nextLong(name, val, hasInline)
 			req.Data = &dataSpec{Value: v}
 			if req.Method == "GET" {
 				req.Method = "POST"
 			}
-			return c, err
+			return err
 		case "--data-binary":
-			v, c, err := nextLong(name, val, hasInline)
+			v, err := nextLong(name, val, hasInline)
 			req.Data = &dataSpec{Value: v, Binary: true}
 			if req.Method == "GET" {
 				req.Method = "POST"
 			}
-			return c, err
+			return err
 		case "--head":
 			req.Head = true
 			req.Method = "HEAD"
-			return []string{arg}, nil
+			return nil
 		case "--output":
-			v, c, err := nextLong(name, val, hasInline)
+			v, err := nextLong(name, val, hasInline)
 			req.Output = v
-			return c, err
+			return err
 		case "--include":
 			req.IncludeHeaders = true
-			return []string{arg}, nil
+			return nil
 		case "--silent":
 			req.Silent = true
-			return []string{arg}, nil
+			return nil
 		case "--verbose":
-			return []string{arg}, nil
+			req.UnsupportedArgs = append(req.UnsupportedArgs, arg)
+			return nil
 		default:
 			req.UnsupportedArgs = append(req.UnsupportedArgs, arg)
-			return []string{arg}, nil
+			return nil
 		}
 	}
 
 	switch {
 	case arg == "-X":
-		v, c, err := nextValue(arg)
+		v, err := nextValue(arg)
 		req.Method = strings.ToUpper(v)
-		return c, err
+		return err
 	case strings.HasPrefix(arg, "-X") && len(arg) > 2:
 		req.Method = strings.ToUpper(arg[2:])
-		return []string{arg}, nil
+		return nil
 	case arg == "-H":
-		v, c, err := nextValue(arg)
+		v, err := nextValue(arg)
 		req.addHeader(v)
-		return c, err
+		return err
 	case strings.HasPrefix(arg, "-H") && len(arg) > 2:
 		req.addHeader(arg[2:])
-		return []string{arg}, nil
+		return nil
 	case arg == "-d":
-		v, c, err := nextValue(arg)
+		v, err := nextValue(arg)
 		req.Data = &dataSpec{Value: v}
 		if req.Method == "GET" {
 			req.Method = "POST"
 		}
-		return c, err
+		return err
 	case strings.HasPrefix(arg, "-d") && len(arg) > 2:
 		req.Data = &dataSpec{Value: arg[2:]}
 		if req.Method == "GET" {
 			req.Method = "POST"
 		}
-		return []string{arg}, nil
+		return nil
 	case arg == "-I":
 		req.Head = true
 		req.Method = "HEAD"
-		return []string{arg}, nil
+		return nil
 	case arg == "-o":
-		v, c, err := nextValue(arg)
+		v, err := nextValue(arg)
 		req.Output = v
-		return c, err
+		return err
 	case strings.HasPrefix(arg, "-o") && len(arg) > 2:
 		req.Output = arg[2:]
-		return []string{arg}, nil
+		return nil
 	case arg == "-i":
 		req.IncludeHeaders = true
-		return []string{arg}, nil
+		return nil
 	case arg == "-s":
 		req.Silent = true
-		return []string{arg}, nil
+		return nil
 	case arg == "-v":
-		return []string{arg}, nil
+		req.UnsupportedArgs = append(req.UnsupportedArgs, arg)
+		return nil
 	default:
 		if strings.HasPrefix(arg, "-") {
 			req.UnsupportedArgs = append(req.UnsupportedArgs, arg)
 		}
-		return []string{arg}, nil
+		return nil
 	}
 }
 
@@ -553,15 +542,19 @@ func buildCurlArgs(req curlRequest, headers signedHeaders) []string {
 		"-H", "X-Akamai-ACS-Auth-Sign: " + headers.AuthSign,
 	}
 	out := make([]string, 0, len(req.Args)+len(added))
-	inserted := false
-	for _, arg := range req.Args {
-		if !inserted && looksLikeURL(arg) {
+	insertAt := -1
+	for i, arg := range req.Args {
+		if looksLikeURL(arg) {
+			insertAt = i
+		}
+	}
+	for i, arg := range req.Args {
+		if i == insertAt {
 			out = append(out, added...)
-			inserted = true
 		}
 		out = append(out, arg)
 	}
-	if !inserted {
+	if insertAt < 0 {
 		out = append(out, added...)
 	}
 	return out
