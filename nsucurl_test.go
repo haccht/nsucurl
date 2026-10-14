@@ -397,3 +397,105 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestReadConfigLongLine(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "nsuacsrc")
+	// > 64KB line to verify scanner buffer handles long lines
+	longVal := strings.Repeat("a", 70000)
+	content := fmt.Sprintf("[default]\naccount = myaccount\nkey = %s\n", longVal)
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readConfig(configPath)
+	if err != nil {
+		t.Fatalf("readConfig failed on long line: %v", err)
+	}
+	if cfg["default"]["account"] != "myaccount" {
+		t.Fatalf("account = %q", cfg["default"]["account"])
+	}
+	if cfg["default"]["key"] != longVal {
+		t.Fatalf("key length mismatch: got %d, want %d", len(cfg["default"]["key"]), len(longVal))
+	}
+}
+
+func TestValidateRequestRejectsEmptyOrMissingPath(t *testing.T) {
+	acs := acsOptions{Action: "version=1&action=dir", SignVersion: 5}
+	creds := credentials{Account: "acc", Key: "key"}
+
+	for _, invalidURL := range []string{
+		"https://example-nsu.akamaihd.net",
+		"https://example-nsu.akamaihd.net?foo=bar",
+	} {
+		req := curlRequest{URL: invalidURL}
+		err := validateRequest(acs, req, creds)
+		if err == nil {
+			t.Errorf("validateRequest should have failed for %q", invalidURL)
+		}
+	}
+}
+
+func TestBuildCurlArgsWithURLInOptionArgument(t *testing.T) {
+	// e.g. -e / --referer passing an http URL as an option argument
+	args := []string{
+		"-s",
+		"-e", "https://referer.example.com/page",
+		"https://target-nsu.akamaihd.net/123/file",
+	}
+	_, req, err := parseArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL != "https://target-nsu.akamaihd.net/123/file" {
+		t.Fatalf("req.URL = %q", req.URL)
+	}
+	got := buildCurlArgs(req, signedHeaders{
+		Action:   "version=1&action=stat",
+		AuthData: "data",
+		AuthSign: "sign",
+	})
+
+	joined := strings.Join(got, "\x00")
+	actionIdx := strings.Index(joined, "X-Akamai-ACS-Action")
+	refererIdx := strings.Index(joined, "https://referer.example.com/page")
+	targetIdx := strings.Index(joined, "https://target-nsu.akamaihd.net/123/file")
+
+	if refererIdx < 0 || actionIdx < 0 || targetIdx < 0 {
+		t.Fatalf("missing elements in buildCurlArgs: %#v", got)
+	}
+	if actionIdx < refererIdx {
+		t.Fatalf("headers were mistakenly inserted before referer argument: %#v", got)
+	}
+	if actionIdx > targetIdx {
+		t.Fatalf("headers were not inserted before target URL: %#v", got)
+	}
+}
+
+func TestDryRunFlag(t *testing.T) {
+	args := []string{
+		"--acs-account", "my-account",
+		"--acs-key", "my-key",
+		"--acs-action", "version=1&action=dir",
+		"--dry-run",
+		"-s",
+		"https://example-nsu.akamaihd.net/123/",
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(args, nil, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run exited with code %d, stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.HasPrefix(out, "curl ") {
+		t.Fatalf("expected output to start with 'curl ', got: %q", out)
+	}
+	if !strings.Contains(out, "X-Akamai-ACS-Action: version=1&action=dir") {
+		t.Fatalf("output missing action header: %q", out)
+	}
+	if !strings.Contains(out, "X-Akamai-ACS-Auth-Sign:") {
+		t.Fatalf("output missing auth sign header: %q", out)
+	}
+	if !strings.Contains(out, "https://example-nsu.akamaihd.net/123/") {
+		t.Fatalf("output missing target URL: %q", out)
+	}
+}

@@ -48,6 +48,7 @@ nsucurl -X PUT \
 - `--acs-key <key>`
 - `--acs-action <query-string>`
 - `--acs-sign-version <3|4|5>`: default `5`
+- `--dry-run`: print generated curl command without executing it
 
 Environment variables:
 

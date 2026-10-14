@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rand"
@@ -43,11 +42,13 @@ type acsOptions struct {
 	Action         string
 	SignVersion    int
 	SignVersionSet bool
+	DryRun         bool
 }
 
 type curlRequest struct {
 	Args             []string
 	URL              string
+	URLIndex         int
 	Method           string
 	Headers          []string
 	Data             *dataSpec
@@ -131,6 +132,10 @@ func runErr(args []string, environ []string, stdout, stderr io.Writer) (int, err
 		return 2, err
 	}
 
+	if acs.DryRun {
+		return printDryRun(req, headers, stdout)
+	}
+
 	if curlPath, err := exec.LookPath("curl"); err == nil {
 		return runCurl(curlPath, req, headers, stdout, stderr)
 	}
@@ -144,6 +149,7 @@ func parseArgs(args []string) (acsOptions, curlRequest, error) {
 		SignVersion: defaultSignVer,
 	}
 	req := curlRequest{
+		URLIndex:        -1,
 		Method:          "GET",
 		UserHeaderNames: map[string]bool{},
 	}
@@ -155,14 +161,15 @@ func parseArgs(args []string) (acsOptions, curlRequest, error) {
 		}
 		if arg == "--" {
 			req.Args = append(req.Args, args[i:]...)
-			for _, rest := range args[i+1:] {
+			for j, rest := range args[i+1:] {
 				if looksLikeURL(rest) {
 					req.URL = rest
+					req.URLIndex = len(req.Args) - len(args[i+1:]) + j
 				}
 			}
 			break
 		}
-		if strings.HasPrefix(arg, "--acs-") {
+		if strings.HasPrefix(arg, "--acs-") || arg == "--dry-run" {
 			name, _, hasInline := splitLongOpt(arg)
 			acsArgs = append(acsArgs, arg)
 			if !hasInline && acsFlagTakesValue(name) && i+1 < len(args) {
@@ -172,7 +179,12 @@ func parseArgs(args []string) (acsOptions, curlRequest, error) {
 			continue
 		}
 
+		curIdx := len(req.Args)
 		req.Args = append(req.Args, arg)
+		if looksLikeURL(arg) {
+			req.URL = arg
+			req.URLIndex = curIdx
+		}
 		if err := scanCurlArg(args, &i, &req); err != nil {
 			return acs, req, err
 		}
@@ -204,6 +216,7 @@ func newACSFlagSet(acs *acsOptions) *pflag.FlagSet {
 	fs.StringVar(&acs.Key, "acs-key", "", "NetStorage HTTP API key")
 	fs.StringVar(&acs.Action, "acs-action", "", "X-Akamai-ACS-Action value")
 	fs.IntVar(&acs.SignVersion, "acs-sign-version", defaultSignVer, "signature version")
+	fs.BoolVar(&acs.DryRun, "dry-run", false, "print curl command without executing it")
 	return fs
 }
 
@@ -220,7 +233,6 @@ func acsFlagTakesValue(name string) bool {
 func scanCurlArg(args []string, i *int, req *curlRequest) error {
 	arg := args[*i]
 	if looksLikeURL(arg) {
-		req.URL = arg
 		return nil
 	}
 	nextValue := func(name string) (string, error) {
@@ -399,6 +411,9 @@ func readConfig(path string) (map[string]map[string]string, error) {
 	result := map[string]map[string]string{}
 	section := ""
 	scanner := bufio.NewScanner(f)
+	const maxScanTokenSize = 1024 * 1024 // 1MB
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, maxScanTokenSize)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
@@ -543,21 +558,56 @@ func buildCurlArgs(req curlRequest, headers signedHeaders) []string {
 	}
 	out := make([]string, 0, len(req.Args)+len(added))
 	insertAt := -1
-	for i, arg := range req.Args {
-		if looksLikeURL(arg) {
-			insertAt = i
+	if req.URLIndex >= 0 && req.URLIndex < len(req.Args) && req.Args[req.URLIndex] == req.URL && req.URL != "" {
+		insertAt = req.URLIndex
+	} else if req.URL != "" {
+		for i, arg := range req.Args {
+			if looksLikeURL(arg) {
+				insertAt = i
+			}
 		}
 	}
-	for i, arg := range req.Args {
-		if i == insertAt {
-			out = append(out, added...)
+	if insertAt >= 0 {
+		for i, arg := range req.Args {
+			if i == insertAt {
+				out = append(out, added...)
+			}
+			out = append(out, arg)
 		}
-		out = append(out, arg)
-	}
-	if insertAt < 0 {
+	} else {
+		out = append(out, req.Args...)
 		out = append(out, added...)
 	}
 	return out
+}
+
+func printDryRun(req curlRequest, headers signedHeaders, stdout io.Writer) (int, error) {
+	args := buildCurlArgs(req, headers)
+	quoted := make([]string, len(args)+1)
+	quoted[0] = "curl"
+	for i, a := range args {
+		quoted[i+1] = shellQuote(a)
+	}
+	fmt.Fprintln(stdout, strings.Join(quoted, " "))
+	return 0, nil
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	safe := true
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == '=' || r == '@' || r == ',') {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func runHTTP(req curlRequest, headers signedHeaders, stdout, stderr io.Writer) (int, error) {
@@ -567,6 +617,9 @@ func runHTTP(req curlRequest, headers signedHeaders, stdout, stderr io.Writer) (
 	body, err := requestBody(req.Data)
 	if err != nil {
 		return 1, err
+	}
+	if body != nil {
+		defer body.Close()
 	}
 	httpReq, err := http.NewRequest(req.Method, req.URL, body)
 	if err != nil {
@@ -611,18 +664,18 @@ func runHTTP(req curlRequest, headers signedHeaders, stdout, stderr io.Writer) (
 	return 0, nil
 }
 
-func requestBody(data *dataSpec) (io.Reader, error) {
+func requestBody(data *dataSpec) (io.ReadCloser, error) {
 	if data == nil {
 		return nil, nil
 	}
 	if strings.HasPrefix(data.Value, "@") {
-		b, err := os.ReadFile(data.Value[1:])
+		f, err := os.Open(data.Value[1:])
 		if err != nil {
 			return nil, err
 		}
-		return bytes.NewReader(b), nil
+		return f, nil
 	}
-	return strings.NewReader(data.Value), nil
+	return io.NopCloser(strings.NewReader(data.Value)), nil
 }
 
 func writeResponseHeaders(w io.Writer, resp *http.Response) {
@@ -666,6 +719,7 @@ NetStorage authentication options:
   --acs-key KEY              NetStorage HTTP API key
   --acs-action ACTION        X-Akamai-ACS-Action value, including version=1
   --acs-sign-version 3|4|5   signature version (default: 5)
+  --dry-run                  print curl command without executing it
 
 Example:
   nsucurl --acs-action 'version=1&action=stat' \
